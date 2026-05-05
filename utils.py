@@ -1,13 +1,24 @@
 """
-Shared utilities used by both tabs (filler and flattener).
+Shared utilities for both tabs.
 
-Keeping this in one place means both tools log in the same format,
-in the same way — so the user only has to learn one log layout.
+Key idea: ONE parent folder per project. Inside it:
+  ├── filled_pdfs/      <- Tab 1 writes here
+  ├── flattened_pdfs/   <- Tab 2 writes here
+  └── execution.log     <- both tabs append timestamped entries here
+
+Why one log? You only need to look in one place to see what happened.
+Why append-mode? You keep the full history if you re-run a step.
 """
 
 import os
 import logging
 from datetime import datetime
+
+
+# Constants shared by both tabs — keeps folder names consistent.
+FILLED_SUBFOLDER = "filled_pdfs"
+FLATTENED_SUBFOLDER = "flattened_pdfs"
+LOG_FILENAME = "execution.log"
 
 
 def safe_filename(text: str) -> str:
@@ -17,33 +28,43 @@ def safe_filename(text: str) -> str:
     return cleaned.strip() or "record"
 
 
-def setup_logger(output_dir: str, prefix: str) -> tuple[logging.Logger, str]:
+def ensure_subfolder(parent_dir: str, subfolder: str) -> str:
     """
-    Create a per-run log file in the output folder.
+    Make sure a subfolder exists inside the parent folder.
+    Returns the full path to the subfolder.
+    """
+    full_path = os.path.join(parent_dir, subfolder)
+    os.makedirs(full_path, exist_ok=True)
+    return full_path
+
+
+def setup_logger(parent_dir: str, run_tag: str) -> tuple[logging.Logger, str]:
+    """
+    Create a logger that APPENDS to the shared 'execution.log' in the parent
+    folder.
 
     Args:
-        output_dir: Folder where the log file will be saved.
-        prefix:     Prefix for the log filename (e.g. 'fill' or 'flatten')
-                    so the user can tell which tool produced which log.
+        parent_dir: The project folder (where filled_pdfs/ and flattened_pdfs/
+                    live).
+        run_tag:    A short tag like 'FILL' or 'FLATTEN' that gets prefixed
+                    to every log line so you can tell which run produced it.
 
-    Returns:
-        (logger, log_path) — the logger object and the full path of the log file.
-
-    The log filename is 'execution_{prefix}_YYYY-MM-DD_HH-MM-SS.log' so each
-    run gets its own log without overwriting older ones.
+    Returns (logger, log_path).
     """
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_path = os.path.join(output_dir, f"execution_{prefix}_{timestamp}.log")
+    log_path = os.path.join(parent_dir, LOG_FILENAME)
 
-    # Use a unique logger name per run so handlers don't get shared between runs
-    logger = logging.getLogger(f"pdf_toolkit_{prefix}_{timestamp}")
+    # Each run gets a unique logger name (so handlers don't get mixed between runs)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    logger_name = f"pdf_toolkit_{run_tag}_{timestamp}"
+    logger = logging.getLogger(logger_name)
     logger.setLevel(logging.INFO)
-    logger.propagate = False  # don't bubble up to the root logger
-    logger.handlers.clear()   # safety against repeated runs
+    logger.propagate = False
+    logger.handlers.clear()
 
-    file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    # mode='a' = APPEND, so older runs are kept
+    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
     formatter = logging.Formatter(
-        fmt="[%(asctime)s] %(levelname)s — %(message)s",
+        fmt=f"[%(asctime)s] [{run_tag}] %(levelname)s — %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     file_handler.setFormatter(formatter)

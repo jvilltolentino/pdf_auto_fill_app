@@ -2,6 +2,11 @@
 Tab 1 — PDF Filler
 -------------------
 Fills an existing fillable PDF template using each row from an Excel file.
+
+Output structure:
+  [parent_folder]/
+  ├── filled_pdfs/     <- the generated PDFs go here
+  └── execution.log    <- shared log (appended to)
 """
 
 import os
@@ -15,7 +20,13 @@ import pandas as pd
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import NameObject, BooleanObject
 
-from utils import safe_filename, setup_logger, close_logger
+from utils import (
+    safe_filename,
+    setup_logger,
+    close_logger,
+    ensure_subfolder,
+    FILLED_SUBFOLDER,
+)
 
 
 # -----------------------------
@@ -61,31 +72,37 @@ def fill_pdf(template_path: str, output_path: str, data: dict) -> None:
 # -----------------------------
 
 class PdfFillerTab(ttk.Frame):
-    """A self-contained Tab that fills PDFs from an Excel sheet."""
+    """Self-contained tab that fills PDFs from an Excel sheet."""
 
-    def __init__(self, parent):
+    def __init__(self, parent, shared_state=None):
         super().__init__(parent, padding=12)
 
         # State
         self.excel_path: str | None = None
         self.pdf_path: str | None = None
-        self.output_dir: str | None = None
+        self.parent_dir: str | None = None
         self.df: pd.DataFrame | None = None
         self.pdf_fields: list[str] = []
         self.mappings: dict[str, tk.StringVar] = {}
         self.name_field_var = tk.StringVar()
 
+        # Shared state lets the two tabs talk to each other (e.g. when this
+        # tab finishes, it tells the flattener tab to use the same folder).
+        self.shared_state = shared_state or {}
+
         self._build_ui()
 
     def _build_ui(self):
-        # Header
         header = ttk.Frame(self)
         header.pack(fill="x", pady=(0, 8))
         ttk.Label(header, text="Fill PDF forms from Excel data",
                   font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        ttk.Label(header,
-                  text="Pick an Excel file and a fillable PDF template. Each row becomes one filled PDF.",
-                  foreground="#666").pack(anchor="w")
+        ttk.Label(
+            header,
+            text="Pick an Excel file, a fillable PDF template, and a project folder. "
+                 "Filled PDFs will be saved in a 'filled_pdfs' subfolder.",
+            foreground="#666",
+        ).pack(anchor="w")
 
         # Step 1: File selection
         step1 = ttk.LabelFrame(self, text=" Step 1 — Choose files ", padding=10)
@@ -93,7 +110,16 @@ class PdfFillerTab(ttk.Frame):
 
         self._make_file_row(step1, "Excel / CSV file:", "excel", self._pick_excel)
         self._make_file_row(step1, "PDF template:", "pdf", self._pick_pdf)
-        self._make_file_row(step1, "Output folder:", "out", self._pick_output_dir)
+        self._make_file_row(step1, "Project folder:", "parent", self._pick_parent_dir)
+
+        # Tip about folder structure
+        tip_row = ttk.Frame(step1)
+        tip_row.pack(fill="x", padx=(140, 0), pady=(0, 2))
+        ttk.Label(
+            tip_row,
+            text="↳ Filled PDFs will go in [project folder]/filled_pdfs/",
+            foreground="#888", font=("Segoe UI", 8),
+        ).pack(anchor="w")
 
         # Step 2: Mapping
         step2 = ttk.LabelFrame(self, text=" Step 2 — Map PDF fields to Excel columns ", padding=10)
@@ -202,12 +228,12 @@ class PdfFillerTab(ttk.Frame):
         self._refresh_mapping_area()
         self._refresh_generate_button()
 
-    def _pick_output_dir(self):
-        path = filedialog.askdirectory(title="Choose output folder")
+    def _pick_parent_dir(self):
+        path = filedialog.askdirectory(title="Choose project folder")
         if not path:
             return
-        self.output_dir = path
-        self.out_path_var.set(path)
+        self.parent_dir = path
+        self.parent_path_var.set(path)
         self._refresh_generate_button()
 
     # ---- Mapping UI ----
@@ -264,12 +290,12 @@ class PdfFillerTab(ttk.Frame):
         return None
 
     def _refresh_generate_button(self):
-        ready = bool(self.excel_path and self.pdf_path and self.output_dir)
+        ready = bool(self.excel_path and self.pdf_path and self.parent_dir)
         self.generate_btn.configure(state="normal" if ready else "disabled")
 
     # ---- Generation ----
     def _on_generate(self):
-        if not (self.df is not None and self.pdf_path and self.output_dir):
+        if not (self.df is not None and self.pdf_path and self.parent_dir):
             return
 
         active_map = {pdf_f: var.get() for pdf_f, var in self.mappings.items()
@@ -293,16 +319,20 @@ class PdfFillerTab(ttk.Frame):
         successes = 0
         errors: list[str] = []
 
-        # Set up the per-run log file
-        logger, log_path = setup_logger(self.output_dir, prefix="fill")
+        # Make sure the 'filled_pdfs' subfolder exists in the parent folder
+        filled_dir = ensure_subfolder(self.parent_dir, FILLED_SUBFOLDER)
+
+        # Open the shared log in append mode and tag every line with [FILL]
+        logger, log_path = setup_logger(self.parent_dir, run_tag="FILL")
         logger.info("=" * 60)
         logger.info("PDF FILL RUN STARTED")
         logger.info("=" * 60)
-        logger.info(f"Excel file:    {self.excel_path}")
-        logger.info(f"PDF template:  {self.pdf_path}")
-        logger.info(f"Output folder: {self.output_dir}")
-        logger.info(f"Total rows:    {total}")
-        logger.info(f"Field mappings: {active_map}")
+        logger.info(f"Excel file:      {self.excel_path}")
+        logger.info(f"PDF template:    {self.pdf_path}")
+        logger.info(f"Project folder:  {self.parent_dir}")
+        logger.info(f"Output subfolder: {filled_dir}")
+        logger.info(f"Total rows:      {total}")
+        logger.info(f"Field mappings:  {active_map}")
         logger.info(f"Filename source field: {name_field}")
         logger.info("-" * 60)
 
@@ -314,7 +344,7 @@ class PdfFillerTab(ttk.Frame):
 
                 name_source = data.get(name_field) or f"row_{i}"
                 fname = f"{i:03d}_{safe_filename(name_source)}.pdf"
-                out_path = os.path.join(self.output_dir, fname)
+                out_path = os.path.join(filled_dir, fname)
 
                 fill_pdf(self.pdf_path, out_path, data)
                 successes += 1
@@ -326,36 +356,44 @@ class PdfFillerTab(ttk.Frame):
             self.after(0, self._update_progress, i, total)
 
         logger.info("-" * 60)
-        logger.info("RUN COMPLETE")
+        logger.info("FILL RUN COMPLETE")
         logger.info(f"Successes: {successes}")
         logger.info(f"Failures:  {len(errors)}")
         logger.info("=" * 60)
         close_logger(logger)
 
-        self.after(0, self._finish_generation, successes, errors, log_path)
+        # Tell the flattener tab where this output went, so it can pre-fill
+        # its own input folder field next time the user clicks that tab.
+        self.shared_state["last_parent_dir"] = self.parent_dir
+        self.shared_state["last_filled_dir"] = filled_dir
+
+        self.after(0, self._finish_generation, successes, errors, log_path, filled_dir)
 
     def _update_progress(self, current: int, total: int):
         self.progress.configure(value=current)
         self.status_lbl.configure(text=f"Generating... {current} / {total}")
 
-    def _finish_generation(self, successes: int, errors: list[str], log_path: str):
+    def _finish_generation(self, successes: int, errors: list[str],
+                           log_path: str, filled_dir: str):
         self.generate_btn.configure(state="normal")
-        log_name = Path(log_path).name
         if errors:
             self.status_lbl.configure(
-                text=f"Done with {len(errors)} error(s). {successes} PDFs created. Log: {log_name}"
+                text=f"Done with {len(errors)} error(s). {successes} PDFs in '{Path(filled_dir).name}/'."
             )
             messagebox.showwarning(
                 "Finished with errors",
-                f"Generated {successes} PDFs.\n\nLog file: {log_name}\n\nErrors:\n"
+                f"Generated {successes} PDFs in:\n{filled_dir}\n\n"
+                f"Log: {log_path}\n\nErrors:\n"
                 + "\n".join(errors[:10])
                 + ("\n..." if len(errors) > 10 else ""),
             )
         else:
             self.status_lbl.configure(
-                text=f"Done! {successes} PDFs saved to: {self.output_dir} (log: {log_name})"
+                text=f"Done! {successes} PDFs in '{Path(filled_dir).name}/'. Now switch to the Flatten tab."
             )
             messagebox.showinfo(
                 "Success",
-                f"Generated {successes} PDFs in:\n{self.output_dir}\n\nLog file: {log_name}",
+                f"Generated {successes} PDFs in:\n{filled_dir}\n\n"
+                f"Log file: {log_path}\n\n"
+                f"Next: switch to the 'Flatten PDFs' tab to lock these PDFs.",
             )

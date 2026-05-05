@@ -117,7 +117,7 @@ class PdfFlattenerTab(ttk.Frame):
         self.input_dir: str | None = None
         self.output_dir: str | None = None
         self.pdf_files: list[str] = []
-        self.suffix_var = tk.StringVar(value="_flattened")
+        self.suffix_var = tk.StringVar(value="")
 
         # Encryption fields
         self.encrypt_var = tk.BooleanVar(value=False)
@@ -312,7 +312,7 @@ class PdfFlattenerTab(ttk.Frame):
         self.progress.configure(maximum=total, value=0)
         successes = 0
         errors: list[str] = []
-        suffix = self.suffix_var.get() or "_flattened"
+        suffix = self.suffix_var.get()
 
         # Pull encryption settings
         encrypt = self.encrypt_var.get()

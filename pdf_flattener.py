@@ -70,7 +70,7 @@ def flatten_pdf(
     # Build save options. If a password was provided, add encryption.
     save_kwargs = {"garbage": 4, "deflate": True}
 
-    if user_password:
+    if user_password or owner_password:
         # Permissions: viewers can READ and PRINT, but NOT modify or annotate.
         # This is what prevents post-flatten edits.
         permissions = (
@@ -355,7 +355,7 @@ class PdfFlattenerTab(ttk.Frame):
                 widget_count = flatten_pdf(
                     pdf_path,
                     out_path,
-                    user_password=password if encrypt else None,
+                    owner_password=password if encrypt else None,
                 )
                 successes += 1
                 lock_note = " [encrypted]" if encrypt else ""
